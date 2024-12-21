@@ -58,6 +58,88 @@ class MidiBuffer:
             midi.writeFile(f)
         print(f"Saved recording to {filename}")
 
+    def render(self, surface: pygame.Surface, viewport_rect: pygame.Rect, current_relative_time: float):
+        """
+        Render MIDI notes as rectangles on a pygame surface.
+        
+        Args:
+            surface: Pygame surface to render on
+            viewport_rect: Rectangle defining the rendering area
+            current_relative_time: Current time relative to start time
+        """
+        # Define the time window
+        time_window = 10.0  # 10 seconds window
+        window_start = current_relative_time - time_window
+        window_end = current_relative_time
+        
+        # Calculate scaling factors
+        time_scale = viewport_rect.width / time_window
+        note_height = 4  # Height of each note in pixels
+        
+        # A2(45) to A7(93)
+        note_range = 48  # 93 - 45 = 48 semitones total
+        note_start = 45
+        note_scale = viewport_rect.height / note_range
+        
+        # Draw background
+        pygame.draw.rect(surface, (20, 20, 20), viewport_rect)
+        
+        # Draw piano roll grid lines (every octave)
+        for octave in range(5):  # From A2 to A7
+            midi_note = note_start + (octave * 12)  # Start from A2 and go up by octaves
+            y_pos = viewport_rect.bottom - ((midi_note - note_start) * note_scale)
+            pygame.draw.line(surface, (40, 40, 40),
+                            (viewport_rect.left, y_pos),
+                            (viewport_rect.right, y_pos))
+        
+        # Keep track of active notes for proper rendering of note duration
+        active_notes = {}  # note_number -> (start_time, note_rectangle)
+        
+        # Process all events in the buffer
+        for event in self.buffer:
+            if event.timestamp < window_start or event.timestamp > window_end:
+                continue
+                
+            # Calculate x position based on event timestamp
+            event_x = viewport_rect.left + ((event.timestamp - window_start) * time_scale)
+            
+            if event.velocity > 0:
+                if note_start <= event.note <= 93:  # Only process notes in our range
+                    # Calculate y position relative to our note range
+                    note_y = viewport_rect.bottom - ((event.note - note_start) * note_scale)
+                    active_notes[event.note] = (event.timestamp, pygame.Rect(
+                        event_x, note_y - note_height, 2, note_height  # Start with minimal width
+                    ))
+                
+            elif event.velocity == 0:
+                if event.note in active_notes:
+                    start_time, note_rect = active_notes[event.note]
+                    # Calculate final width based on note duration
+                    note_duration = event.timestamp - start_time
+                    note_width = note_duration * time_scale
+                    note_rect.width = max(1, note_width)
+                    
+                    # Draw the note rectangle with color based on velocity
+                    velocity_color = min(255, event.velocity * 2)
+                    color = (velocity_color, velocity_color, 255)
+                    pygame.draw.rect(surface, color, note_rect)
+                    del active_notes[event.note]
+        
+        # Draw any still-active notes
+        for note, (start_time, note_rect) in active_notes.items():
+            # Calculate width based on current time
+            note_duration = current_relative_time - start_time
+            note_width = note_duration * time_scale
+            note_rect.width = max(1, note_width)
+            
+            # Draw still-active notes in a different color
+            pygame.draw.rect(surface, (100, 255, 100), note_rect)
+        
+        # Draw playhead line at current time
+        playhead_x = viewport_rect.right
+        pygame.draw.line(surface, (255, 50, 50),
+                        (playhead_x, viewport_rect.top),
+                        (playhead_x, viewport_rect.bottom), 2)
 
 class MidiDevice:
     def __init__(self, port_name: str = None):
@@ -117,10 +199,10 @@ class MidiPiano:
         self.margin = 20
         self.button_width = 80
         self.button_height = 80
-        self.grid_offset = 100  # Space for save button and other controls
+        self.grid_offset = 60  # Space for save button and other controls
         
         # Create button grid
-        self.buttons = self.create_button_grid(start_note=36) 
+        self.buttons = self.create_button_grid(start_note=40) 
         
         self.save_button = pygame.Rect(250, 320, 100, 40)
 
@@ -134,7 +216,15 @@ class MidiPiano:
         
         for row in range(rows):
             for col in range(cols):
-                note_number = start_note + row * 12 + col
+                warp = +1 if row > 1 else 0
+                start_note = 40
+                note_number =(
+                    (128 - start_note)
+                    - ((row+1) * 12 )
+                    + col
+                    + (row * 7)
+                    + warp
+                    )
                 x = self.margin + col * (self.button_width + 5)
                 y = self.grid_offset + row * (self.button_height + 5)
                 
@@ -145,7 +235,7 @@ class MidiPiano:
                 
                 # Use different colors for white and black keys
                 is_black_key = '#' in note_name
-                color = (100, 100, 100) if is_black_key else (200, 200, 200)
+                color = (80, 80, 80) if is_black_key else (200, 200, 200)
                 
                 button = PianoButton(
                     rect=pygame.Rect(x, y, self.button_width, self.button_height),
@@ -171,7 +261,9 @@ class MidiPiano:
         for handler in self.event_handlers:
             handler(event)
 
-    def run(self):
+    def run(self, midi_buffer):
+
+
         running = True
         while running:
             for event in pygame.event.get():
@@ -184,7 +276,6 @@ class MidiPiano:
                             if button.is_pressed:
                                 continue
                             button.is_pressed = True
-                            button.color = (150, 150, 150)
                             self.emit_midi_event(button.note, 100)
                     
                     # if self.save_button.collidepoint(event.pos):
@@ -195,7 +286,6 @@ class MidiPiano:
                         if not button.is_pressed:
                             continue
                         button.is_pressed = False
-                        button.color = (200, 200, 200)
                         self.emit_midi_event(button.note, 0)
 
             # Draw interface
@@ -203,7 +293,8 @@ class MidiPiano:
             
             # Draw piano grid
             for button in self.buttons:
-                pygame.draw.rect(self.screen, button.color, button.rect)
+                cmul = 0.5 if button.is_pressed else 1
+                pygame.draw.rect(self.screen, tuple(int(c*cmul) for c in button.color), button.rect)
                 pygame.draw.rect(self.screen, (0, 0, 0), button.rect, 2)
                 
                 # Draw note label
@@ -217,6 +308,9 @@ class MidiPiano:
             # text_rect = text.get_rect(center=self.save_button.center)
             # self.screen.blit(text, text_rect)
             
+            midi_buffer.render(self.screen, pygame.Rect(20, 580, 1018, 200), time.time())
+
+
             pygame.display.flip()
 
         self.midi_device.cleanup()
@@ -261,7 +355,7 @@ def main():
         # Connect buffer to piano events
         piano.add_event_handler(midi_buffer.add_event)
         
-        piano.run()
+        piano.run(midi_buffer)
         
     except ValueError as e:
         print(f"Error: {e}")
