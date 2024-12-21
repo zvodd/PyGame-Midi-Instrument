@@ -18,6 +18,7 @@ class MidiEvent:
 @dataclass
 class PianoButton:
     rect: pygame.Rect
+    keyboard_key:pygame.key
     color: tuple
     note: int
     is_pressed: bool = False
@@ -182,7 +183,16 @@ class MidiDevice:
 
 
 class MidiPiano:
+    "Its a guitar layout"
     NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+    BUTTON_KEYS = (
+        "            "
+        "            "
+        '1234567890-='
+        "qwertyuiop[]"
+        "asdfghjkl;' "
+        "zxcvbnm,./  "
+    )
 
     def __init__(self, midi_device: MidiDevice):
         pygame.init()
@@ -208,12 +218,12 @@ class MidiPiano:
 
         # Initialize font
         self.font = pygame.font.Font(None, 24)
-
+    
     def create_button_grid(self, start_note: int) -> List[PianoButton]:
         buttons = []
         rows = 6
         cols = 12
-        
+        key_index = 0
         for row in range(rows):
             for col in range(cols):
                 warp = +1 if row > 1 else 0
@@ -237,12 +247,24 @@ class MidiPiano:
                 is_black_key = '#' in note_name
                 color = (80, 80, 80) if is_black_key else (200, 200, 200)
                 
+                # Assign a key from BUTTON_KEYS to this button
+                if key_index < len(self.BUTTON_KEYS):
+                    keyboard_key = self.BUTTON_KEYS[key_index]
+                    key_index = (key_index + 1)
+                    if keyboard_key == ' ':
+                        keyboard_key=None
+                else:
+                    keyboard_key=None
+
                 button = PianoButton(
                     rect=pygame.Rect(x, y, self.button_width, self.button_height),
+                    keyboard_key=keyboard_key,
                     color=color,
                     note=note_number,
-                    label=label
+                    label=label,
                 )
+
+                
                 buttons.append(button)
         
         return buttons
@@ -270,23 +292,31 @@ class MidiPiano:
                 if event.type == pygame.QUIT:
                     running = False
                 
-                if event.type == pygame.MOUSEBUTTONDOWN:
-                    for button in self.buttons:
-                        if button.rect.collidepoint(event.pos):
-                            if button.is_pressed:
-                                continue
-                            button.is_pressed = True
-                            self.emit_midi_event(button.note, 100)
-                    
+                # if event.type == pygame.MOUSEBUTTONDOWN:
                     # if self.save_button.collidepoint(event.pos):
                     #     self.emit_midi_event(0, 0)  # Signal for save
                 
-                if event.type == pygame.MOUSEBUTTONUP:
-                    for button in (b for b in self.buttons if b.is_pressed):
-                        if not button.is_pressed:
-                            continue
-                        button.is_pressed = False
-                        self.emit_midi_event(button.note, 0)
+                if event.type in [pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP, pygame.KEYDOWN, pygame.KEYUP]:
+                    for button in self.buttons:
+                        if event.type == pygame.MOUSEBUTTONDOWN:
+                            if button.rect.collidepoint(event.pos) and not button.is_pressed:
+                                button.is_pressed = True
+                                self.emit_midi_event(button.note, 100)
+
+                        elif event.type == pygame.MOUSEBUTTONUP:
+                            if button.is_pressed:
+                                button.is_pressed = False
+                                self.emit_midi_event(button.note, 0)
+
+                        elif event.type == pygame.KEYDOWN:
+                            if button.keyboard_key == event.unicode and not button.is_pressed:
+                                button.is_pressed = True
+                                self.emit_midi_event(button.note, 100)
+
+                        elif event.type == pygame.KEYUP:
+                            if button.keyboard_key == event.unicode and button.is_pressed:
+                                button.is_pressed = False
+                                self.emit_midi_event(button.note, 0)
 
             # Draw interface
             self.screen.fill((255, 255, 255))
